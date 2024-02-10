@@ -4,6 +4,9 @@ bsky-python-cli is an an unofficial command-line client for posting to Bluesky.
 
 Supports mentions, hyperlinks, website card (Open Graph meta for embedding in post ('social cards')), multiple images and alt text. For your security this will make a copy of your images with the EXIF data stripped prior to posting.
 
+Does not use an SDK because I hate them.
+
+
 ## Prerequisites
 Get your app password here: [https://bsky.app/settings/app-passwords](https://bsky.app/settings/app-passwords)
 
