@@ -17,23 +17,23 @@ Then edit your settings inside the script.
 
 just text:
 ```sh
-script.py 'Hello BlueSky'
+bsky-python-cli.py 'Hello BlueSky'
 ```
 just images:
 ```sh
-script.py '' '1.png,2.png'
+bsky-python-cli.py '' '1.png,2.png'
 ```
 with mention and hyperlink:
 ```sh
-script.py 'This is a script made by @av1d - check out his website https://superscape.org/'
+bsky-python-cli.py 'This is a script made by @av1d - check out his website https://superscape.org/'
 ```
 with mention and images with alt text:
 ```sh
-script.py 'Yum @everyone! Check out these cakes' 'straw.png,choc.png,bost.png,poke.png' 'strawberry~chocolate~Boston cream pie~poke cake'
+bsky-python-cli.py 'Yum @everyone! Check out these cakes' 'straw.png,choc.png,bost.png,poke.png' 'strawberry~chocolate~Boston cream pie~poke cake'
 ```
 everything:
 ```sh
-script.py 'Example @example https://example.org/' 'example1.png,example2.png' 'alt text for example1.png ~ example2.png text'
+bsky-python-cli.py 'Example @example https://example.org/' 'example1.png,example2.png' 'alt text for example1.png ~ example2.png text'
 ```
 
 ## Bugs
