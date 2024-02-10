@@ -13,23 +13,31 @@ from PIL import Image
 from typing import List, Dict
 
 
-VERSION = '0.1'
+VERSION = '0.2'
 
 """
     bsky-python-cli
-    
+
     Unofficial command line client for posting to BlueSky.
     Supports mentions, hyperlinks, website card (Open Graph meta for embedding in post), multiple images and alt text.
     For your security this will make a copy of your images with the EXIF data stripped prior to posting.
-    
+
     This software is neither created nor endorsed by Bluesky. Use at your own risk.
+
+    Changelog:
+    [02.10.2024]
+    - better error handling for some instances
+    - Updated Open Graph to grab a title from title tag if og:title is unavailable.
+    - Grabs favicon if no og:image, then trys first <img> if no favicon before setting image to none.
 """
 
 
 #################
 ### USER SETTINGS
-BLUESKY_HANDLE       = "YOURUSERNAME.bsky.social"
-BLUESKY_APP_PASSWORD = "YOURPASSWORD"
+# Username MUST contain '.bsky.social' at the end (or equivalent). Example: 'example.bsky.social'
+# Get your application password here: https://bsky.app/settings/app-passwords
+BLUESKY_HANDLE       = "YOURNAME.bsky.social"
+BLUESKY_APP_PASSWORD = "YOUR-APP-PASSWORD"
 
 EXIT_ON_FAILED_EXIF  = True
 """
@@ -58,6 +66,11 @@ LANGUAGE = ["en-US"]
 """
     you can use multiple ISO language codes like ["en-US", "en-AU"].
     see: https://www.andiamo.co.uk/resources/iso-language-codes/
+"""
+
+DEBUG = True
+"""
+    if set to True, dumps the final JSON request for the post for examination.
 """
 ###
 #################
@@ -141,20 +154,35 @@ def get_mention_data(mention):  # get the handle's DID to create the mention fac
 
 
 def get_token():  # API token
-    """ 
+    """
         Get a session token. The API documentation doesn't mention
         expiry so we're just going to grab a new one each time
         until we learn otherwise. ¯\_(ツ)_/¯
     """
-    resp = requests.post(
-        "https://bsky.social/xrpc/com.atproto.server.createSession",
-        json={"identifier": BLUESKY_HANDLE, "password": BLUESKY_APP_PASSWORD},
-    )
-    
-    resp.raise_for_status()
+
     global token
-    token = resp.json()
-    return token
+
+    try:
+        resp = requests.post(
+            "https://bsky.social/xrpc/com.atproto.server.createSession",
+            json={"identifier": BLUESKY_HANDLE, "password": BLUESKY_APP_PASSWORD},
+        )
+
+        resp.raise_for_status()
+        token = resp.json()
+
+        if 'accessJwt' in token:
+            token = resp.json()
+            return token
+        else:
+            print("Error: 'accessJwt' key not found in token")
+            print(f"Error: {resp.content}")
+            sys.exit(1)
+
+    except requests.exceptions.HTTPError as e:
+        print(f"Fatal error: HTTP error occurred: {e}")
+        print(f"Response content: {resp.content}")
+        sys.exit(1)
 
 
 def upload_image(image_path):  # upload image, get the blob
@@ -214,31 +242,92 @@ def get_website_card(URL):  # aka Open Graph / social card / etc.
     page = requests.get(URL, verify=False)
 
     if page.status_code == 200:
-        soup = BeautifulSoup(page.content, 'html.parser')
-        og_title       = soup.find('meta', property='og:title')['content']
-        og_description = soup.find('meta', property='og:description')['content']
-        og_image       = soup.find('meta', property='og:image')['content']
+        try:
+            soup = BeautifulSoup(page.content, 'html.parser')
+
+            print("\nFetching Open Graph data:\n")
+
+            try:  # try to find a title
+                og_title = soup.find('meta', property='og:title')['content']
+            except Exception as e:
+                print(f"Error getting og:title or tag doesn't exist: {e}")
+                print("Trying to get site title instead")
+                for title in soup.find_all('title'):
+                    title_search = title.get_text()
+                    if title_search:
+                        print(f"Found title via <title> tag: {title_search}")
+                        og_title = title_search
+                    else:
+                        print(f"Can't find any title. Setting og:title to the URL {URL}")
+                        og_title = str(URL)
+            print('--------')
+
+            try:  # see if og:description is defined
+                og_description = soup.find('meta', property='og:description')['content']
+                if og_description:
+                    print(f"Found og:description: {og_description}")
+                else:
+                    og_description = soup.find('meta', property='Description')['content']
+                    if not og_description:
+                        print("Setting og:description to empty")
+                        og_description = ''
+            except Exception as e:
+                print(f"Error getting og:description or tag doesn't exist: {e}")
+                og_description = ''
+            print('--------')
+
+            try:  # try to get some sort of image at all
+                og_image = soup.find('meta', property='og:image')['content']
+                if og_image:
+                    print(f"Found og:image: {og_image}")
+            except Exception as e:
+                print(f"Error getting og:image or tag doesn't exist. Attempting to use favicon instead: {e}")
+                # attempt to grab the favicon if that fails
+                favicon_tag = soup.find('link', rel='icon')
+                if favicon_tag:
+                    favicon_url = favicon_tag['href']
+                    og_image = favicon_url
+                    print(f"Found image (favicon): {og_image}")
+                else:  # try for the first <img> tag
+                    print("Can't find favicon. Trying to find the first image on the page.")
+                    image = soup.findAll('img', src=True)
+                    image = image[0]
+                    if image:
+                        og_image = image
+                        print(f"Found image (first <img> tag): {og_image}")
+                    else:   # nothing else we can do
+                        print("Finding any images has failed. Nothing else to try. Setting og:image to 'None'")
+                        og_image = None
+            print('--------')
+
+        except Exception as e:
+            raise Exception('Unable to parse Open Graph metadata: {e}')
+            sys.exit(1)
     else:
         print(f"Fetching card from URL failed with status code {page.status_code}")
         return {}
 
     # download the website card image
-    if og_image:
-        url = str(URL) + '/' + str(og_image)
-        r   = requests.get(url, allow_redirects=True)
+    if og_image is not None:
+        r = requests.get(og_image, allow_redirects=True)
         if r.status_code == 200:
-            file_extension = url.split('.')[-1]
+            file_extension = og_image.split('.')[-1]
             file_exists = True
             while file_exists:  # make sure we don't overwrite any local files
                 card_filename = str(uuid.uuid4()) + '.' + file_extension
                 file_exists = os.path.exists(card_filename)
             open(card_filename, 'wb').write(r.content)
         else:
-            print(f"Fetching image failed with status code {r.status_code}")
+            print(f"Fetching image {og_image} failed with status code {r.status_code}. Web card will not contain image.")
             return {}
 
     # upload the image to get the blob
-    blob = upload_image(card_filename)
+    try:
+        blob = upload_image(card_filename)
+    except Exception as e:
+        erroneous_image_data = str(og_image)
+        print(f"Error uploading image (err_1): {erroneous_image_data}: {e}")
+
     if blob:
         link     = blob['ref']['$link']
         mimeType = blob['mimeType']
@@ -248,7 +337,7 @@ def get_website_card(URL):  # aka Open Graph / social card / etc.
             "embed": {
                 "$type": "app.bsky.embed.external",
                 "external": {
-                  "uri": str(url),
+                  "uri": str(og_image),
                   "title": str(og_title),
                   "description": str(og_description),
                   "thumb": {
@@ -272,11 +361,13 @@ def get_website_card(URL):  # aka Open Graph / social card / etc.
 
         return embed
     else:
+        erroneous_image_data = str(og_image)
+        print(f"Error uploading image (err_2): {erroneous_image_data}")
         return {}
 
 
 def prepare_post(post_string, image_blob_list = None):
-    
+
     url_data   = find_url_data(post_string)
     url_facets = parse_url_facets(url_data)
     mentions   = find_mentions(post_string)
@@ -337,6 +428,15 @@ def prepare_post(post_string, image_blob_list = None):
 
 
 def send_post(prepared_post):
+
+    if DEBUG == True:
+        print("+-------------------+")
+        print("| DEBUG (post body) |")
+        print("+-------------------+\n\n")
+        print("```json\n")
+        print(prepared_post)
+        print("\n```\n+--- end of post body ---+")
+
     resp = requests.post(
         "https://bsky.social/xrpc/com.atproto.repo.createRecord",
         headers={"Authorization": f"Bearer {token['accessJwt']}"},
@@ -348,7 +448,7 @@ def send_post(prepared_post):
     )
 
     if resp.status_code == 200:
-        print("Success!")
+        print("Success! Your message has been posted.")
         #print(json.dumps(resp.json(), indent=2))
     else:
         print(f"Request failed with status code: {resp.status_code}")
@@ -360,11 +460,11 @@ def main():
 
     # command line arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('text', type=str, 
+    parser.add_argument('text', type=str,
         help='Text of post, enclosed in quotes. Specify \'\' for none.'
             'Post without text must have an image.'
     )
-    parser.add_argument('image', type=str, nargs='?', 
+    parser.add_argument('image', type=str, nargs='?',
         help='Image path(s), optional. 4 max. If more than one, separate with commas.'
             'If paths/filesnames have spaces, enclose entire string in quotes.'
             'Example: "/my pix/pic.jpg" or "/my pix/pic.jpg,/my pix/pic2.jpg".'
